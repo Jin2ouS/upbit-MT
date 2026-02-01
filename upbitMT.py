@@ -532,9 +532,10 @@ def format_result_dict(obj):
     return json.dumps(obj, indent=2, ensure_ascii=False)
 
 
-def format_holdings_message(accounts, market=None):
+def format_holdings_message(accounts, market=None, min_val_amt=0):
     """보유자산 메시지 포맷 (업비트 화면 참고, 테이블 형태)
     market 지정 시 해당 코인+KRW만, None이면 전체
+    min_val_amt: 평가금액 이하 소액자산 제외 (0이면 제외 없음)
     """
     rows_data = []
 
@@ -579,6 +580,8 @@ def format_holdings_message(accounts, market=None):
         else:
             pl_pct = "-"
 
+        if val_amt < min_val_amt:
+            continue
         qty_str = f"{bal:.8f}".rstrip("0").rstrip(".")
         val_str = f"{val_amt:,.0f}원"
         out_rows.append((cur, qty_str, val_str, pl_pct, val_amt))
@@ -615,7 +618,7 @@ def main():
     send_message(text)
 
     accounts = get_accounts()
-    msg_holdings_start = f"📊 [보유잔고] 스크립트 시작 시:\n{format_holdings_message(accounts)}"
+    msg_holdings_start = f"📊 [보유잔고] 스크립트 시작 시:\n{format_holdings_message(accounts, min_val_amt=1000)}"
     print(msg_holdings_start)
     send_message(msg_holdings_start)
 
