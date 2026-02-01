@@ -56,6 +56,39 @@ UPBIT_MIN_ORDER_KRW = 5000
 if not UPBIT_ACCESS_KEY or not UPBIT_SECRET_KEY:
     raise ValueError("UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY가 .env에 없습니다.")
 
+# API 키/인증 관련 오류 시 스크립트 종료
+API_AUTH_ERROR_NAMES = frozenset({
+    "no_authorization_ip",    # IP 미등록
+    "invalid_access_key",     # API 키 오류
+    "invalid_jwt",            # JWT 토큰 오류
+    "jwt_verification_failed",
+})
+
+
+def handle_api_auth_error(resp, context=""):
+    """API 응답에서 인증/키 관련 오류 감지 시 경고 전송 후 스크립트 종료"""
+    if resp.status_code == 200:
+        return
+    try:
+        data = resp.json()
+        err = data.get("error", {})
+        name = err.get("name", "")
+        if name in API_AUTH_ERROR_NAMES:
+            msg_body = err.get("message", str(data))
+            ctx = f" ({context})" if context else ""
+            warn = (
+                f"🚨 [*{SCRIPT_NAME}*] API 키/인증 오류로 스크립트를 종료합니다.{ctx}\n"
+                f"   오류: {name}\n"
+                f"   내용: {msg_body}\n"
+                f"   {get_runtime_info()}\n"
+                f"   → 업비트 API 키 관리에서 IP 등록·키 유효성 확인 후 재시작하세요."
+            )
+            send_message(warn)
+            print(warn)
+            sys.exit(1)
+    except (ValueError, KeyError):
+        pass
+
 
 def get_upbit_jwt(query_params=None, query_body=None):
     """업비트 API JWT 토큰 생성 (query_hash 포함)
@@ -170,6 +203,7 @@ def get_accounts():
     token = get_upbit_jwt()
     headers = {"Authorization": f"Bearer {token}"}
     resp = requests.get(url, headers=headers, timeout=10)
+    handle_api_auth_error(resp, "계좌 조회")
     if resp.status_code != 200:
         print(f"⚠️ [계좌 조회 실패] {resp.status_code} {resp.text}")
         return []
@@ -231,6 +265,7 @@ def create_order(market, side, ord_type, price=None, volume=None):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
     url = f"{UPBIT_BASE_URL}/orders"
     resp = requests.post(url, headers=headers, json=body, timeout=10)
+    handle_api_auth_error(resp, f"주문 {side} {market}")
     if resp.status_code != 200:
         print(f"🚨 [주문 API 오류] {market} {side} : {resp.status_code} {resp.text}")
         return None
