@@ -1,4 +1,7 @@
 .env
+.env.DesktopHP
+.env.synologyNAS
+
 *.pyc
 __pycache__/
 .venv/
