@@ -618,7 +618,8 @@ def main():
     send_message(text)
 
     accounts = get_accounts()
-    msg_holdings_start = f"📊 [ 업비트 - 보유잔고 ]\n{format_holdings_message(accounts, min_val_amt=1000)}"
+    krw_balance_start = sum(float(a.get("balance", 0)) + float(a.get("locked", 0)) for a in accounts if a.get("currency") == "KRW")
+    msg_holdings_start = f"📊 [ 업비트 - 보유잔고 ]\nKRW: {krw_balance_start:,.0f}원\n{format_holdings_message(accounts, min_val_amt=1000)}"
     print(msg_holdings_start)
     send_message(msg_holdings_start)
 
@@ -629,16 +630,6 @@ def main():
     while True:
         accounts = get_accounts()
         krw_balance = sum(float(a.get("balance", 0)) + float(a.get("locked", 0)) for a in accounts if a["currency"] == "KRW")
-        print(f"🏚️ [계좌 잔고] KRW: {krw_balance:,.0f}원")
-
-        print("\n🗂️ [보유 코인]")
-        for a in accounts:
-            if a["currency"] == "KRW":
-                continue
-            bal = float(a.get("balance", 0)) + float(a.get("locked", 0))
-            avg = float(a.get("avg_buy_price", 0))
-            if bal > 0:
-                print(f"    💵 {a['currency']} : 보유 {bal:.8f} / 매수가 {avg:,.0f}원")
 
         for row in rows:
             if str(row.get("감시중", "")).strip().upper() != "O":
