@@ -512,6 +512,22 @@ def parse_sell_quantity(market_name, reason, trade_qty, trade_unit, held_qty, ma
         return 0
 
 
+def is_valid_for_watch(row):
+    """감시 대상 유효 여부: 감시중=O, 유효기간 유효(존재/파싱 가능/미경과)"""
+    if str(row.get("감시중", "")).strip().upper() != "O":
+        return False
+    valid_until = row.get("유효기간")
+    if pd.isnull(valid_until) or str(valid_until).strip() == "":
+        return False
+    try:
+        expiry = pd.to_datetime(valid_until).date()
+    except Exception:
+        return False
+    if expiry < datetime.today().date():
+        return False
+    return True
+
+
 def format_duration(seconds):
     """초 → 일/시간/분 문자열"""
     days = seconds // (24 * 3600)
@@ -618,7 +634,9 @@ def main():
     all_rows = load_excel_with_format(EXCEL_PATH)
     rows = all_rows
     total_count = len(all_rows)
-    watch_count = sum(1 for r in rows if str(r.get("감시중", "")).strip().upper() == "O")
+    # 유효기간 경과/없음/파싱오류 항목은 감시 시작 시점에 필터 (반복 메시지 방지)
+    active_rows = [r for r in rows if is_valid_for_watch(r)]
+    watch_count = len(active_rows)
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     text = (
@@ -638,17 +656,22 @@ def main():
     name_market_map = build_name_market_map()
     sent_first = False
     last_status_hour = None
+    excluded_expired_during_run = set()  # (stock_name, reason) - 운용 중 유효기간 경과 시 1회만 알림 후 제외
 
     while True:
         accounts = get_accounts()
         krw_balance = sum(float(a.get("balance", 0)) + float(a.get("locked", 0)) for a in accounts if a["currency"] == "KRW")
 
-        for row in rows:
+        for row in active_rows:
             if str(row.get("감시중", "")).strip().upper() != "O":
                 continue
 
             stock_name = str(row.get("종목명", "")).strip()
             reason = str(row.get("감시사유", "")).strip()
+            row_key = (stock_name, reason)
+            if row_key in excluded_expired_during_run:
+                continue
+
             trade_type = str(row.get("매매구분", "")).strip()
             trade_type_str = trade_type
             target_price_raw = str(row.get("감시가격", "")).strip()
@@ -656,19 +679,12 @@ def main():
             valid_until = row.get("유효기간")
 
             today = datetime.today().date()
-            if pd.isnull(valid_until) or str(valid_until).strip() == "":
-                msg = f"⚠️ [유효기간 없음] 제외: {stock_name} ({reason})"
-                print(msg)
-                send_message(msg)
-                continue
             try:
                 expiry = pd.to_datetime(valid_until).date()
-            except Exception as e:
-                msg = f"❌ [유효기간 파싱 오류] {stock_name} ({reason}) → {e}"
-                print(msg)
-                send_message(msg)
+            except Exception:
                 continue
             if expiry < today:
+                excluded_expired_during_run.add(row_key)
                 msg = f"⏳ [유효기간 경과] 제외: {stock_name} ({reason})"
                 print(msg)
                 send_message(msg)
@@ -931,7 +947,12 @@ def main():
 
         now = datetime.now()
         if SEND_HOURLY_MSG and last_status_hour != now.hour:
-            watch_count = sum(1 for r in rows if str(r.get("감시중", "")).strip().upper() == "O")
+            watch_count = sum(
+                1
+                for r in active_rows
+                if str(r.get("감시중", "")).strip().upper() == "O"
+                and (str(r.get("종목명", "")).strip(), str(r.get("감시사유", "")).strip()) not in excluded_expired_during_run
+            )
             send_message(f"✨ [*{SCRIPT_NAME}*] [정시 알림] 감시중 {watch_count:,}건 ({now.strftime('%Y-%m-%d %H:%M:%S')})")
             last_status_hour = now.hour
 
