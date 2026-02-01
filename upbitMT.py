@@ -797,6 +797,17 @@ def main():
                 price_type = "market" if order_price == "market" else "limit"
                 unit = buy_info["unit"]
                 val = buy_info["value"]
+                if price_type == "limit" and order_price == "limit":
+                    price_val = target_price  # 감시가격으로 지정가 (해당 가격 이하 매수)
+                elif price_type == "limit":
+                    try:
+                        price_val = int(order_price)
+                    except ValueError:
+                        msg = f"🚨 [{stock_name}] 지정가 변환 실패: '{order_price}'"
+                        print(msg)
+                        send_message(msg)
+                        row["감시중"] = "X"
+                        continue
                 if price_type == "market":
                     if unit == "개":
                         krw_amt = int(val * market_price)
@@ -816,14 +827,6 @@ def main():
                         continue
                     result = buy_order(market, "market", price=krw_amt)
                 else:
-                    try:
-                        price_val = int(order_price)
-                    except ValueError:
-                        msg = f"🚨 [{stock_name}] 지정가 변환 실패: '{order_price}'"
-                        print(msg)
-                        send_message(msg)
-                        row["감시중"] = "X"
-                        continue
                     if unit == "개":
                         order_qty = val
                     elif unit == "KRW":
@@ -859,9 +862,9 @@ def main():
                     continue
                 order_price = str(row.get("매매가격", "")).strip().lower()
                 price_type = "market" if order_price == "market" else "limit"
-                if price_type == "market":
-                    order_amt = int(order_qty * market_price)
-                else:
+                if price_type == "limit" and order_price == "limit":
+                    price_val = target_price  # 감시가격으로 지정가 (해당 가격 이상 매도)
+                elif price_type == "limit":
                     try:
                         price_val = int(order_price)
                     except ValueError:
@@ -870,6 +873,9 @@ def main():
                         send_message(msg)
                         row["감시중"] = "X"
                         continue
+                if price_type == "market":
+                    order_amt = int(order_qty * market_price)
+                else:
                     order_amt = int(order_qty * price_val)
                 if order_amt < UPBIT_MIN_ORDER_KRW:
                     msg = (
