@@ -266,10 +266,11 @@ def create_order(market, side, ord_type, price=None, volume=None):
     url = f"{UPBIT_BASE_URL}/orders"
     resp = requests.post(url, headers=headers, json=body, timeout=10)
     handle_api_auth_error(resp, f"주문 {side} {market}")
-    if resp.status_code != 200:
-        print(f"🚨 [주문 API 오류] {market} {side} : {resp.status_code} {resp.text}")
-        return None
-    return resp.json()
+    if resp.status_code in (200, 201):
+        return resp.json()
+    # 실패 시 에러 정보 포함해 반환 (메시지 표시용)
+    print(f"🚨 [주문 API 오류] {market} {side} : {resp.status_code} {resp.text}")
+    return {"_error": True, "status_code": resp.status_code, "error_text": resp.text}
 
 
 def buy_order(market, price_type, quantity=None, price=None):
@@ -283,7 +284,7 @@ def buy_order(market, price_type, quantity=None, price=None):
         return create_order(market, "bid", "limit", price=int(price), volume=float(quantity))
     except Exception as e:
         print(f"🚨 [매수 주문 실패] {market} : {e}")
-        return None
+        return {"_error": True, "error_text": str(e)}
 
 
 def sell_order(market, price_type, quantity, price=None):
@@ -297,7 +298,7 @@ def sell_order(market, price_type, quantity, price=None):
         return create_order(market, "ask", "limit", price=int(price), volume=float(quantity))
     except Exception as e:
         print(f"🚨 [매도 주문 실패] {market} : {e}")
-        return None
+        return {"_error": True, "error_text": str(e)}
 
 
 def load_excel_with_format(file_path):
@@ -650,15 +651,21 @@ def main():
 
             today = datetime.today().date()
             if pd.isnull(valid_until) or str(valid_until).strip() == "":
-                print(f"⚠️ [유효기간 없음] 제외: {stock_name} ({reason})")
+                msg = f"⚠️ [유효기간 없음] 제외: {stock_name} ({reason})"
+                print(msg)
+                send_message(msg)
                 continue
             try:
                 expiry = pd.to_datetime(valid_until).date()
             except Exception as e:
-                print(f"❌ [유효기간 파싱 오류] {stock_name} ({reason}) → {e}")
+                msg = f"❌ [유효기간 파싱 오류] {stock_name} ({reason}) → {e}"
+                print(msg)
+                send_message(msg)
                 continue
             if expiry < today:
-                print(f"⏳ [유효기간 경과] 제외: {stock_name} ({reason})")
+                msg = f"⏳ [유효기간 경과] 제외: {stock_name} ({reason})"
+                print(msg)
+                send_message(msg)
                 continue
 
             market = name_market_map.get(stock_name)
@@ -875,8 +882,16 @@ def main():
 
             row["감시중"] = "X"
 
-            if result is None:
-                msg_after = f"🔴 [주문 결과] [*{stock_name}*] {reason} : 주문 실패"
+            if result is None or result.get("_error"):
+                err_detail = ""
+                if result and result.get("_error"):
+                    code = result.get("status_code")
+                    text = result.get("error_text", "")
+                    if code is not None and str(code).strip():
+                        err_detail = f"\n   [에러] HTTP {code}\n   {text}"
+                    elif text:
+                        err_detail = f"\n   [에러] {text}"
+                msg_after = f"🔴 [주문 결과] [*{stock_name}*] {reason} : 주문 실패{err_detail}"
                 print(msg_after)
                 send_message(msg_after)
             else:
