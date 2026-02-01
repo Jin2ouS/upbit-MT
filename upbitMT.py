@@ -675,7 +675,8 @@ def main():
                         market = v
                         break
             if not market:
-                msg = f"🚨 [{stock_name}] {reason} : 마켓코드 매핑 실패"
+                krx_hint = " (KRX가 아닌 KRW 형식 사용, 예: ETH/KRW)" if "/KRX" in stock_name.upper() else ""
+                msg = f"🚨 [{stock_name}] {reason} : 티커 잘못됨 - 마켓코드 매핑 실패{krx_hint}"
                 print(msg)
                 send_message(msg)
                 row["감시중"] = "X"
@@ -688,10 +689,17 @@ def main():
             elif "%" in str(target_price_raw_format) or "%" in str(target_price_raw):
                 target_price = get_target_price_percent(market, stock_name, reason, target_price_raw, target_price_raw_format, accounts)
             elif any(x in str(target_price_raw_format) for x in ["원", "₩", "#"]) or str(target_price_raw).replace(".", "", 1).replace("-", "", 1).isdigit():
+                _val = str(target_price_raw or "").strip()
+                if not _val or _val.upper() == "NONE":
+                    msg = f"🚨 [*{stock_name}*] {reason} : 감시가격(원화) 비어있음"
+                    print(msg)
+                    send_message(msg)
+                    row["감시중"] = "X"
+                    continue
                 try:
-                    target_price = int(float(str(target_price_raw).replace("원", "").replace(",", "").strip()))
-                except Exception as e:
-                    msg = f"🚨 [*{stock_name}*] {reason} : 감시가격(원화) 해석 실패 → {target_price_raw}"
+                    target_price = int(float(_val.replace("원", "").replace(",", "").strip()))
+                except (ValueError, TypeError) as e:
+                    msg = f"🚨 [*{stock_name}*] {reason} : 감시가격(원화) 해석 실패 → '{target_price_raw}'"
                     print(msg)
                     send_message(msg)
                     row["감시중"] = "X"
