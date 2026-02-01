@@ -35,7 +35,6 @@ import pandas as pd
 from openpyxl import load_workbook
 from dotenv import load_dotenv
 import jwt
-import pyupbit
 
 from utils import get_runtime_info, send_message
 
@@ -60,7 +59,8 @@ if not UPBIT_ACCESS_KEY or not UPBIT_SECRET_KEY:
 
 def get_upbit_jwt(query_params=None, query_body=None):
     """업비트 API JWT 토큰 생성 (query_hash 포함)
-    query_hash는 query string 형식(market=KRW-BTC&side=bid...)이어야 함. pyupbit 방식 준용.
+    query_hash는 query string 형식(market=KRW-BTC&side=bid...)이어야 함.
+    공식 문서: https://docs.upbit.com/reference/create-authorization-request
     """
     payload = {
         "access_key": UPBIT_ACCESS_KEY,
@@ -213,35 +213,53 @@ def get_minute_highlow(market, market_name, num_candles=3):
     return high, low
 
 
+def create_order(market, side, ord_type, price=None, volume=None):
+    """업비트 공식 API로 주문 생성 (POST /v1/orders)
+    https://docs.upbit.com/reference/new-order
+    - side: "bid"(매수) | "ask"(매도)
+    - ord_type: "price"(시장가 매수) | "market"(시장가 매도) | "limit"(지정가)
+    - price: 시장가 매수 시 KRW 금액, 지정가 시 호가
+    - volume: 시장가 매도 시 코인 수량, 지정가 시 주문 수량
+    """
+    body = {"market": market, "side": side, "ord_type": ord_type}
+    if price is not None:
+        body["price"] = str(int(price))
+    if volume is not None:
+        body["volume"] = str(volume) if isinstance(volume, float) else str(float(volume))
+
+    token = get_upbit_jwt(query_body=body)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
+    url = f"{UPBIT_BASE_URL}/orders"
+    resp = requests.post(url, headers=headers, json=body, timeout=10)
+    if resp.status_code != 200:
+        print(f"🚨 [주문 API 오류] {market} {side} : {resp.status_code} {resp.text}")
+        return None
+    return resp.json()
+
+
 def buy_order(market, price_type, quantity=None, price=None):
-    """매수 주문 (pyupbit 사용)
+    """매수 주문 (업비트 공식 API)
     - 시장가(price): price에 KRW 금액 전달
     - 지정가(limit): price, quantity 전달
     """
-    upbit = pyupbit.Upbit(UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY)
     try:
         if price_type == "market":
-            result = upbit.buy_market_order(market, int(price))
-        else:
-            result = upbit.buy_limit_order(market, int(price), float(quantity))
-        return result
+            return create_order(market, "bid", "price", price=int(price))
+        return create_order(market, "bid", "limit", price=int(price), volume=float(quantity))
     except Exception as e:
         print(f"🚨 [매수 주문 실패] {market} : {e}")
         return None
 
 
 def sell_order(market, price_type, quantity, price=None):
-    """매도 주문 (pyupbit 사용)
+    """매도 주문 (업비트 공식 API)
     - 시장가(price): quantity 전달 (코인 수량)
     - 지정가(limit): price, quantity 전달
     """
-    upbit = pyupbit.Upbit(UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY)
     try:
         if price_type == "market":
-            result = upbit.sell_market_order(market, float(quantity))
-        else:
-            result = upbit.sell_limit_order(market, int(price), float(quantity))
-        return result
+            return create_order(market, "ask", "market", volume=float(quantity))
+        return create_order(market, "ask", "limit", price=int(price), volume=float(quantity))
     except Exception as e:
         print(f"🚨 [매도 주문 실패] {market} : {e}")
         return None
