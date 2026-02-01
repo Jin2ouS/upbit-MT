@@ -532,10 +532,11 @@ def format_result_dict(obj):
     return json.dumps(obj, indent=2, ensure_ascii=False)
 
 
-def format_holdings_message(accounts, market=None, min_val_amt=0):
+def format_holdings_message(accounts, market=None, min_val_amt=0, krw_balance=None):
     """보유자산 메시지 포맷 (업비트 화면 참고, 테이블 형태)
     market 지정 시 해당 코인+KRW만, None이면 전체
     min_val_amt: 평가금액 이하 소액자산 제외 (0이면 제외 없음)
+    krw_balance: 보유 KRW (지정 시 상단 요약 포함)
     """
     rows_data = []
 
@@ -558,40 +559,51 @@ def format_holdings_message(accounts, market=None, min_val_amt=0):
                 avg = float(held.get("avg_buy_price", 0))
                 rows_data.append((coin, bal, avg, bal * avg, 0, 0, market))
 
+    total_buy = sum(r[3] for r in rows_data)
+
     if not rows_data:
-        return "        (보유 없음)"
+        body = "        (보유 없음)"
+    else:
+        markets_to_fetch = [r[6] for r in rows_data if r[6]]
+        prices = get_ticker_prices(markets_to_fetch) if markets_to_fetch else {}
 
-    markets_to_fetch = [r[6] for r in rows_data if r[6]]
-    prices = get_ticker_prices(markets_to_fetch) if markets_to_fetch else {}
+        header = "| 보유자산 |   평가금액   |      평가손익      |    보유수량   |"
+        sep = "|----------|--------------|--------------------|---------------|"
+        lines = [header, sep]
 
-    header = "| 보유자산 |   평가금액   |      평가손익      |    보유수량   |"
-    sep = "|----------|--------------|--------------------|---------------|"
-    lines = [header, sep]
+        out_rows = []
+        for row in rows_data:
+            cur, bal, avg, buy_amt, _, _, mkt = row
+            price = prices.get(mkt, 0) if mkt else 0
+            val_amt = bal * price if price else 0
+            if buy_amt > 0 and price:
+                pl = (val_amt - buy_amt) / buy_amt * 100
+                sign = "+" if pl >= 0 else ""
+                pl_pct = f"{sign}{pl:.2f}%"
+            else:
+                pl_pct = "-"
 
-    out_rows = []
-    for row in rows_data:
-        cur, bal, avg, buy_amt, _, _, mkt = row
-        price = prices.get(mkt, 0) if mkt else 0
-        val_amt = bal * price if price else 0
-        if buy_amt > 0 and price:
-            pl = (val_amt - buy_amt) / buy_amt * 100
-            sign = "+" if pl >= 0 else ""
-            pl_pct = f"{sign}{pl:.2f}%"
-        else:
-            pl_pct = "-"
+            if val_amt < min_val_amt:
+                continue
+            qty_str = f"{bal:.8f}".rstrip("0").rstrip(".")
+            val_str = f"{val_amt:,.0f}원"
+            out_rows.append((cur, val_str, pl_pct, qty_str, val_amt))
 
-        if val_amt < min_val_amt:
-            continue
-        qty_str = f"{bal:.8f}".rstrip("0").rstrip(".")
-        val_str = f"{val_amt:,.0f}원"
-        out_rows.append((cur, val_str, pl_pct, qty_str, val_amt))
+        out_rows.sort(key=lambda x: x[4], reverse=True)
+        for cur, val_str, pl_pct, qty_str, _ in out_rows:
+            pl_display = pl_pct if isinstance(pl_pct, str) else str(pl_pct)
+            lines.append(f"| {cur:6} | {val_str:>12} | {pl_display:>18} | {qty_str:>14} |")
+        body = "\n".join(lines)
 
-    out_rows.sort(key=lambda x: x[4], reverse=True)
-    for cur, val_str, pl_pct, qty_str, _ in out_rows:
-        pl_display = pl_pct if isinstance(pl_pct, str) else str(pl_pct)
-        lines.append(f"| {cur:6} | {val_str:>12} | {pl_display:>18} | {qty_str:>14} |")
-
-    return "\n".join(lines)
+    prefix = ""
+    if krw_balance is not None:
+        prefix = (
+            f"[ 업비트 - 보유잔고 ]\n"
+            f"- 총 매수 : {total_buy:,.0f}원\n"
+            f"- 보유 KRW: {krw_balance:,.0f}원\n\n"
+            f"[ 보유자산 목록]\n"
+        )
+    return f"{prefix}{body}"
 
 
 atexit.register(lambda: send_message(f"🔴 [*{SCRIPT_NAME}*] 스크립트 정상 종료 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) {get_runtime_info()}"))
@@ -619,7 +631,7 @@ def main():
 
     accounts = get_accounts()
     krw_balance_start = sum(float(a.get("balance", 0)) + float(a.get("locked", 0)) for a in accounts if a.get("currency") == "KRW")
-    msg_holdings_start = f"📊 [ 업비트 - 보유잔고 ]\nKRW: {krw_balance_start:,.0f}원\n{format_holdings_message(accounts, min_val_amt=1000)}"
+    msg_holdings_start = f"📊 {format_holdings_message(accounts, min_val_amt=1000, krw_balance=krw_balance_start)}"
     print(msg_holdings_start)
     send_message(msg_holdings_start)
 
