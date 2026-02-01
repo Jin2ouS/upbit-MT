@@ -139,7 +139,7 @@ def build_name_market_map():
             name_map[english] = mkt
         name_map[symbol] = mkt
         name_map[mkt] = mkt
-        name_map[f"{symbol}/KRX"] = mkt
+        name_map[f"{symbol}/KRW"] = mkt
     return name_map
 
 
