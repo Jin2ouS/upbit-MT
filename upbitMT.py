@@ -599,9 +599,9 @@ def format_holdings_message(accounts, market=None, min_val_amt=0, krw_balance=No
     if krw_balance is not None:
         prefix = (
             f"[ 업비트 - 보유잔고 ]\n"
-            f"- 총 매수 : {total_buy:,.0f}원\n"
-            f"- 보유 KRW: {krw_balance:,.0f}원\n\n"
-            f"[ 보유자산 목록]\n"
+            f" - 🪙 총 매수 : {total_buy:,.0f}원\n"
+            f" - 💵 보유 KRW: {krw_balance:,.0f}원\n\n"
+            f" - 🪙 보유자산 목록\n"
         )
     return f"{prefix}{body}"
 
