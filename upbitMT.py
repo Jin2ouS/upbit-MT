@@ -512,6 +512,20 @@ def parse_sell_quantity(market_name, reason, trade_qty, trade_unit, held_qty, ma
         return 0
 
 
+def has_required_registration_fields(row):
+    """종목명, 감시가격, 감시조건이 모두 존재하는지 확인 (등록건수 산정 기준)"""
+    stock_name = str(row.get("종목명", "") or "").strip()
+    if not stock_name:
+        return False
+    watch_price = row.get("감시가격")
+    if pd.isnull(watch_price) or str(watch_price).strip() in ("", "None", "NaT"):
+        return False
+    watch_condition = row.get("감시조건")
+    if pd.isnull(watch_condition) or str(watch_condition).strip() in ("", "None", "NaT"):
+        return False
+    return True
+
+
 def is_valid_for_watch(row):
     """감시 대상 유효 여부: 감시중=O, 유효기간 유효(존재/파싱 가능/미경과)"""
     if str(row.get("감시중", "")).strip().upper() != "O":
@@ -633,7 +647,7 @@ def main():
 
     all_rows = load_excel_with_format(EXCEL_PATH)
     rows = all_rows
-    total_count = len(all_rows)
+    total_count = sum(1 for r in rows if has_required_registration_fields(r))
     # 유효기간 경과/없음/파싱오류 항목은 감시 시작 시점에 필터 (반복 메시지 방지)
     active_rows = [r for r in rows if is_valid_for_watch(r)]
     watch_count = len(active_rows)
