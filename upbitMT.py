@@ -187,33 +187,64 @@ def get_ticker_price(market, retries=3, delay=1):
 
 
 def get_ticker_prices(markets):
-    """여러 마켓 현재가를 ticker API 1회로 조회 → { market: 현재가(int) } 반환 (upbitMA 방식)
-    markets: ["KRW-ETH", "KRW-ADA", ...] → 한 번의 요청에 markets=KRW-ETH,KRW-ADA,...
+    """여러 마켓 현재가를 ticker API로 조회 → { market: 현재가(int) } 반환
+    일괄 요청 시 하나라도 잘못된 마켓 코드가 있으면 404가 나오므로, 404 시 마켓별 개별 조회로 fallback.
     """
     if not markets:
         return {}
+    mlist = list(markets) if isinstance(markets, (list, tuple)) else [markets]
     url = f"{UPBIT_BASE_URL}/ticker"
+    params = {"markets": ",".join(mlist)}
+
     for attempt in range(3):
         try:
-            resp = requests.get(
-                url,
-                params={"markets": ",".join(markets)},
-                timeout=15,
-            )
+            resp = requests.get(url, params=params, timeout=15)
             if resp.status_code == 200:
                 data = resp.json()
-                return {
+                if not isinstance(data, list):
+                    data = [data] if data else []
+                out = {
                     r["market"]: int(float(r["trade_price"]))
                     for r in data
                     if r.get("trade_price") is not None
                 }
+                if out:
+                    return out
+                if attempt == 2:
+                    print(f"⚠️ [ticker 조회] 200 응답이지만 시세 0건 (마켓 {len(mlist)}개)")
+            elif resp.status_code == 404:
+                # 일괄 요청 404 = 목록 중 존재하지 않는 마켓 포함 → 마켓별 개별 조회로 fallback
+                return _get_ticker_prices_one_by_one(mlist)
+            elif attempt == 2:
+                print(f"⚠️ [ticker 조회] HTTP {resp.status_code} (마켓 {len(mlist)}개)")
             if resp.status_code == 429:
                 time.sleep(1.0 * (attempt + 1))
                 continue
+        except Exception as e:
+            if attempt == 2:
+                print(f"⚠️ [ticker 조회] 요청/파싱 오류: {e}")
+            time.sleep(0.2 * (attempt + 1))
+    return _get_ticker_prices_one_by_one(mlist)
+
+
+def _get_ticker_prices_one_by_one(markets):
+    """404 등으로 일괄 조회 실패 시, 마켓별로 1건씩 조회 후 병합 (보유자산 목록용 fallback)."""
+    if not markets:
+        return {}
+    url = f"{UPBIT_BASE_URL}/ticker"
+    result = {}
+    for i, mkt in enumerate(markets):
+        if i > 0:
+            time.sleep(0.06)
+        try:
+            resp = requests.get(url, params={"markets": mkt}, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and isinstance(data, list) and data[0].get("trade_price") is not None:
+                    result[mkt] = int(float(data[0]["trade_price"]))
         except Exception:
-            if attempt < 2:
-                time.sleep(0.2 * (attempt + 1))
-    return {}
+            pass
+    return result
 
 
 def get_accounts():
@@ -618,7 +649,7 @@ def format_holdings_message(accounts, market=None, min_val_amt=0, krw_balance=No
         markets_to_fetch = [r[6] for r in rows_data if r[6]]
         prices = get_ticker_prices(markets_to_fetch) if markets_to_fetch else {}
 
-        header = "| 보유자산 |   평가금액   |      평가손익      |    보유수량   |"
+        header = "| 자산 |   평가금액   |      손익      |    보유수량   |"
         sep = "|----------|--------------|--------------------|---------------|"
         lines = [header, sep]
 
@@ -634,10 +665,11 @@ def format_holdings_message(accounts, market=None, min_val_amt=0, krw_balance=No
             else:
                 pl_pct = "-"
 
+            # 평가금액이 min_val_amt 미만이면 출력 제외 (시세 없음=0원도 제외)
             if val_amt < min_val_amt:
                 continue
             qty_str = f"{bal:.8f}".rstrip("0").rstrip(".")
-            val_str = f"{val_amt:,.0f}원"
+            val_str = f"{val_amt:,.0f}원" if price else "-"
             out_rows.append((cur, val_str, pl_pct, qty_str, val_amt))
 
         out_rows.sort(key=lambda x: x[4], reverse=True)
@@ -648,11 +680,12 @@ def format_holdings_message(accounts, market=None, min_val_amt=0, krw_balance=No
 
     prefix = ""
     if krw_balance is not None:
+        list_title = "보유자산 목록 (소액자산 제외)" if min_val_amt > 0 else "보유자산 목록"
         prefix = (
             f"[ 업비트 - 보유잔고 ]\n"
             f" - 🪙 총 매수 : {total_buy:,.0f}원\n"
             f" - 💵 보유 KRW: {krw_balance:,.0f}원\n\n"
-            f" - 🪙 보유자산 목록\n"
+            f" - 🪙 {list_title}\n"
         )
     return f"{prefix}{body}"
 
