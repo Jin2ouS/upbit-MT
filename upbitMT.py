@@ -56,6 +56,14 @@ UPBIT_MIN_ORDER_KRW = 5000
 if not UPBIT_ACCESS_KEY or not UPBIT_SECRET_KEY:
     raise ValueError("UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY가 .env에 없습니다.")
 
+# API 호출 최소화 (429 방지, upbitMA 방식)
+# - ticker: 루프당 1회(감시 마켓 일괄 조회) + 보유자산 표시 시 1회(필요 마켓 일괄)
+# - market/all: TTL 10분 캐시
+# - 분봉/일봉: 마켓별 1회 요청이므로 호출 후 0.1초 sleep
+_MARKET_CACHE_TTL = 600  # 초 (10분)
+_name_market_map_cache = None
+_market_cache_time = 0
+
 # API 키/인증 관련 오류 시 스크립트 종료
 API_AUTH_ERROR_NAMES = frozenset({
     "no_authorization_ip",    # IP 미등록
@@ -123,7 +131,7 @@ def get_market_all():
 
 
 def build_name_market_map():
-    """종목명/심볼 -> 마켓코드 매핑 생성"""
+    """종목명/심볼 -> 마켓코드 매핑 생성 (캐시 없이 직접 호출)"""
     markets = get_market_all()
     name_map = {}
     for m in markets:
@@ -141,6 +149,17 @@ def build_name_market_map():
         name_map[mkt] = mkt
         name_map[f"{symbol}/KRW"] = mkt
     return name_map
+
+
+def get_cached_name_market_map():
+    """종목명 매핑 TTL 캐시. TTL 내에는 market/all API 호출 없이 반환."""
+    global _name_market_map_cache, _market_cache_time
+    now_ts = time.time()
+    if _name_market_map_cache is not None and (now_ts - _market_cache_time) < _MARKET_CACHE_TTL:
+        return _name_market_map_cache
+    _name_market_map_cache = build_name_market_map()
+    _market_cache_time = now_ts
+    return _name_market_map_cache
 
 
 def get_ticker_price(market, retries=3, delay=1):
@@ -168,33 +187,33 @@ def get_ticker_price(market, retries=3, delay=1):
 
 
 def get_ticker_prices(markets):
-    """여러 마켓 현재가 조회 (markets: ["KRW-ETH", "KRW-ADA", ...])
-    일부 마켓이 존재하지 않으면 전체 요청이 404되므로, 개별 조회 후 병합
-    업비트 한국: KRW-XXX 형식 (예: KRW-SUI). SUI/KRW → KRW-SUI
+    """여러 마켓 현재가를 ticker API 1회로 조회 → { market: 현재가(int) } 반환 (upbitMA 방식)
+    markets: ["KRW-ETH", "KRW-ADA", ...] → 한 번의 요청에 markets=KRW-ETH,KRW-ADA,...
     """
     if not markets:
         return {}
-    result = {}
-    for i, mkt in enumerate(markets):
-        if i > 0:
-            time.sleep(0.08)
-        for attempt in range(2):
-            try:
-                resp = requests.get(
-                    f"{UPBIT_BASE_URL}/ticker",
-                    params={"markets": mkt},
-                    timeout=8,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data:
-                        result[mkt] = int(float(data[0]["trade_price"]))
-                        break
-            except Exception:
-                pass
-            if attempt == 0:
-                time.sleep(0.2)
-    return result
+    url = f"{UPBIT_BASE_URL}/ticker"
+    for attempt in range(3):
+        try:
+            resp = requests.get(
+                url,
+                params={"markets": ",".join(markets)},
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    r["market"]: int(float(r["trade_price"]))
+                    for r in data
+                    if r.get("trade_price") is not None
+                }
+            if resp.status_code == 429:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+        except Exception:
+            if attempt < 2:
+                time.sleep(0.2 * (attempt + 1))
+    return {}
 
 
 def get_accounts():
@@ -211,10 +230,11 @@ def get_accounts():
 
 
 def get_minute_candles(market, unit=1, count=10):
-    """분봉 캔들 조회 (고가/저가 계산용)"""
+    """분봉 캔들 조회 (고가/저가 계산용). 마켓별 1회 요청이므로 호출 간 간격 유지."""
     url = f"{UPBIT_BASE_URL}/candles/minutes/{unit}"
     params = {"market": market, "count": count}
     resp = requests.get(url, params=params, timeout=10)
+    time.sleep(0.1)
     if resp.status_code != 200:
         return None
     data = resp.json()
@@ -224,10 +244,11 @@ def get_minute_candles(market, unit=1, count=10):
 
 
 def get_day_candles(market, count=30):
-    """일봉 캔들 조회 (기준봉익절 최저가 계산용)"""
+    """일봉 캔들 조회 (기준봉익절 최저가 계산용). 마켓별 1회 요청이므로 호출 간 간격 유지."""
     url = f"{UPBIT_BASE_URL}/candles/days"
     params = {"market": market, "count": count}
     resp = requests.get(url, params=params, timeout=10)
+    time.sleep(0.1)
     if resp.status_code != 200:
         return None
     data = resp.json()
@@ -667,7 +688,7 @@ def main():
     print(msg_holdings_start)
     send_message(msg_holdings_start)
 
-    name_market_map = build_name_market_map()
+    name_market_map = get_cached_name_market_map()
     sent_first = False
     last_status_hour = None
     excluded_expired_during_run = set()  # (stock_name, reason) - 운용 중 유효기간 경과 시 1회만 알림 후 제외
@@ -675,6 +696,25 @@ def main():
     while True:
         accounts = get_accounts()
         krw_balance = sum(float(a.get("balance", 0)) + float(a.get("locked", 0)) for a in accounts if a["currency"] == "KRW")
+
+        name_market_map = get_cached_name_market_map()
+        watch_markets = []
+        for r in active_rows:
+            if str(r.get("감시중", "")).strip().upper() != "O":
+                continue
+            row_key = (str(r.get("종목명", "")).strip(), str(r.get("감시사유", "")).strip())
+            if row_key in excluded_expired_during_run:
+                continue
+            sn = str(r.get("종목명", "")).strip()
+            mkt = name_market_map.get(sn)
+            if not mkt:
+                for k, v in name_market_map.items():
+                    if k.upper() == sn.upper():
+                        mkt = v
+                        break
+            if mkt:
+                watch_markets.append(mkt)
+        price_cache = get_ticker_prices(list(dict.fromkeys(watch_markets))) if watch_markets else {}
 
         for row in active_rows:
             if str(row.get("감시중", "")).strip().upper() != "O":
@@ -748,7 +788,7 @@ def main():
                 row["감시중"] = "X"
                 continue
 
-            market_price = get_ticker_price(market)
+            market_price = price_cache.get(market)
             if market_price is None:
                 continue
 
