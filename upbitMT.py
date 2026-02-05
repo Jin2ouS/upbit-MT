@@ -264,6 +264,54 @@ def get_accounts():
     return resp.json()
 
 
+def get_open_orders(market=None, limit=20):
+    """미체결(체결 대기) 주문 목록 조회. GET /v1/orders/open
+    market 지정 시 해당 마켓만, None이면 전체.
+    """
+    url = f"{UPBIT_BASE_URL}/orders/open"
+    params = {"state": "wait", "limit": limit, "order_by": "desc"}
+    if market:
+        params["market"] = market
+    token = get_upbit_jwt(query_params=params)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        handle_api_auth_error(resp, "미체결 주문 조회")
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"⚠️ [미체결 주문 조회 실패] {e}")
+        return []
+
+
+def format_open_orders_message(orders, market_name=None):
+    """미체결 주문 목록을 읽기 쉬운 문자열로 포맷."""
+    if not orders:
+        return "   (미체결 주문 없음)"
+    lines = []
+    for o in orders:
+        mkt = o.get("market", "")
+        side = o.get("side", "")
+        side_str = "매수" if side == "bid" else "매도"
+        price = o.get("price") or "0"
+        try:
+            price_int = int(float(price))
+            price_fmt = f"{price_int:,}원"
+        except (ValueError, TypeError):
+            price_fmt = str(price)
+        vol = o.get("volume") or "0"
+        remain = o.get("remaining_volume") or vol
+        state = o.get("state", "")
+        created = o.get("created_at", "")[:19].replace("T", " ") if o.get("created_at") else ""
+        lines.append(
+            f"   · {mkt} {side_str} {price_fmt} | 수량 {remain} (전체 {vol}) | {state} | {created}"
+        )
+    header = f"   [*{market_name}*] 미체결 주문" if market_name else "   미체결 주문"
+    return header + "\n" + "\n".join(lines)
+
+
 def get_minute_candles(market, unit=1, count=10):
     """분봉 캔들 조회 (고가/저가 계산용). 마켓별 1회 요청이므로 호출 간 간격 유지."""
     url = f"{UPBIT_BASE_URL}/candles/minutes/{unit}"
@@ -983,6 +1031,7 @@ def main():
                         row["감시중"] = "X"
                         continue
                     result = buy_order(market, "market", price=krw_amt)
+                    order_was_limit = False
                 else:
                     if unit == "개":
                         order_qty = val
@@ -1002,6 +1051,7 @@ def main():
                         row["감시중"] = "X"
                         continue
                     result = buy_order(market, "limit", quantity=order_qty, price=price_val)
+                order_was_limit = (price_type == "limit")
 
             elif trade_type in ["매도", "기준봉익절"]:
                 currency = market.replace("KRW-", "")
@@ -1046,9 +1096,12 @@ def main():
                     continue
                 if price_type == "market":
                     result = sell_order(market, "market", order_qty)
+                    order_was_limit = False
                 else:
                     result = sell_order(market, "limit", order_qty, price_val)
+                order_was_limit = (price_type == "limit")
             else:
+                order_was_limit = False
                 msg = f"🚨 [*{stock_name}*] 알 수 없는 매매구분: '{trade_type}'"
                 print(msg)
                 send_message(msg)
@@ -1078,6 +1131,11 @@ def main():
                 )
                 print(msg_holdings)
                 send_message(msg_holdings)
+                if order_was_limit:
+                    open_orders = get_open_orders(market=market)
+                    msg_open = f"📋 [미체결 주문]\n{format_open_orders_message(open_orders, stock_name)}"
+                    print(msg_open)
+                    send_message(msg_open)
 
         if not sent_first:
             send_message(f"🟡 {datetime.now().strftime('%m-%d %H:%M:%S')} - 최초 감시 완료 ⏱️")
