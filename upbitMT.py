@@ -64,6 +64,10 @@ _MARKET_CACHE_TTL = 600  # 초 (10분)
 _name_market_map_cache = None
 _market_cache_time = 0
 
+# 호가 단위(tick_size) 캐시 — 지정가 주문 가격 보정용 (invalid_price_bid 방지)
+_tick_size_cache = {}
+_TICK_SIZE_CACHE_TTL = 3600  # 1시간
+
 # API 키/인증 관련 오류 시 스크립트 종료
 API_AUTH_ERROR_NAMES = frozenset({
     "no_authorization_ip",    # IP 미등록
@@ -299,6 +303,48 @@ def get_minute_highlow(market, market_name, num_candles=3):
     return high, low
 
 
+def get_tick_size(market):
+    """마켓 호가 단위 조회 (orderbook/instruments). 지정가 주문 가격 보정용. 캐시 사용."""
+    global _tick_size_cache, _TICK_SIZE_CACHE_TTL
+    now_ts = time.time()
+    if market in _tick_size_cache:
+        cached = _tick_size_cache[market]
+        if (now_ts - cached["_ts"]) < _TICK_SIZE_CACHE_TTL:
+            return cached["tick_size"]
+    url = f"{UPBIT_BASE_URL}/orderbook/instruments"
+    try:
+        resp = requests.get(url, params={"markets": market}, timeout=10)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data or not isinstance(data, list):
+            return None
+        for item in data:
+            if item.get("market") == market:
+                ts = item.get("tick_size")
+                if ts is not None:
+                    try:
+                        tick = int(float(ts)) if "." in str(ts) else int(ts)
+                    except (ValueError, TypeError):
+                        tick = 1
+                    _tick_size_cache[market] = {"tick_size": tick, "_ts": now_ts}
+                    return tick
+        return None
+    except Exception as e:
+        print(f"⚠️ [호가 단위 조회 실패] {market} : {e}")
+        return None
+
+
+def round_price_to_tick(price, tick_size, side):
+    """지정가 주문 시 가격을 호가 단위에 맞춤. bid=내림, ask=올림."""
+    if not tick_size or tick_size < 1:
+        return int(price)
+    p = float(price)
+    if side == "bid":
+        return int(math.floor(p / tick_size) * tick_size)
+    return int(math.ceil(p / tick_size) * tick_size)
+
+
 def create_order(market, side, ord_type, price=None, volume=None):
     """업비트 공식 API로 주문 생성 (POST /v1/orders)
     https://docs.upbit.com/reference/new-order
@@ -309,7 +355,12 @@ def create_order(market, side, ord_type, price=None, volume=None):
     """
     body = {"market": market, "side": side, "ord_type": ord_type}
     if price is not None:
-        body["price"] = str(int(price))
+        price_val = int(price)
+        if ord_type == "limit":
+            tick = get_tick_size(market)
+            if tick is not None:
+                price_val = round_price_to_tick(price_val, tick, side)
+        body["price"] = str(price_val)
     if volume is not None:
         body["volume"] = str(volume) if isinstance(volume, float) else str(float(volume))
 
