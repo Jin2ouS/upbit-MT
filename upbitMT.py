@@ -713,6 +713,36 @@ def format_result_dict(obj):
     return json.dumps(obj, indent=2, ensure_ascii=False)
 
 
+def format_watch_list_message(active_rows):
+    """감시중인 행 목록을 읽기 쉬운 테이블 문자열로 포맷."""
+    if not active_rows:
+        return "📋 [감시 목록]\n        (감시중인 항목 없음)"
+    header = "| 종목 | 감시사유 | 매매구분 | 감시가격 | 조건 | 유효기간 |"
+    sep = "|------|----------|----------|----------|------|----------|"
+    lines = [header, sep]
+    for row in active_rows:
+        stock = str(row.get("종목명", "") or "").strip()[:10]
+        reason = str(row.get("감시사유", "") or "").strip()[:12]
+        trade = str(row.get("매매구분", "") or "").strip()[:6]
+        price_raw = row.get("감시가격")
+        if price_raw is None or (hasattr(price_raw, "__float__") and pd.isnull(price_raw)):
+            price_str = "-"
+        else:
+            try:
+                p = float(price_raw)
+                price_str = f"{p:,.0f}" if p == int(p) else f"{p:,.2f}"
+            except (TypeError, ValueError):
+                price_str = str(price_raw).strip()[:10]
+        condition = str(row.get("감시조건", "") or "").strip()[:4]
+        valid_until = row.get("유효기간")
+        try:
+            expiry_str = pd.to_datetime(valid_until).strftime("%Y-%m-%d") if valid_until is not None and not (isinstance(valid_until, float) and pd.isnull(valid_until)) else "-"
+        except Exception:
+            expiry_str = "-"
+        lines.append(f"| {stock:10} | {reason:12} | {trade:6} | {price_str:>10} | {condition:4} | {expiry_str:10} |")
+    return "📋 [감시 목록]\n" + "\n".join(lines)
+
+
 def format_holdings_message(accounts, market=None, min_val_amt=0, krw_balance=None):
     """보유자산 메시지 포맷 (업비트 화면 참고, 테이블 형태)
     market 지정 시 해당 코인+KRW만, None이면 전체
@@ -819,6 +849,9 @@ def main():
     msg_holdings_start = f"📊 {format_holdings_message(accounts, min_val_amt=1000, krw_balance=krw_balance_start)}"
     print(msg_holdings_start)
     send_message(msg_holdings_start)
+
+    msg_watch_list = format_watch_list_message(active_rows)
+    send_message(msg_watch_list)
 
     name_market_map = get_cached_name_market_map()
     sent_first = False
