@@ -127,16 +127,22 @@ def get_upbit_jwt(query_params=None, query_body=None):
 
 
 def get_market_all():
-    """마켓 코드 목록 조회 (종목명 매핑용)"""
+    """마켓 코드 목록 조회 (종목명 매핑용). 연결 오류 시 None 반환."""
     url = f"{UPBIT_BASE_URL}/market/all"
-    resp = requests.get(url, params={"isDetails": "true"}, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
+    try:
+        resp = requests.get(url, params={"isDetails": "true"}, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as e:
+        print(f"⚠️ [마켓 목록 조회 실패] {e}")
+        return None
 
 
 def build_name_market_map():
-    """종목명/심볼 -> 마켓코드 매핑 생성 (캐시 없이 직접 호출)"""
+    """종목명/심볼 -> 마켓코드 매핑 생성 (캐시 없이 직접 호출). API 실패 시 빈 dict 반환."""
     markets = get_market_all()
+    if not markets:
+        return {}
     name_map = {}
     for m in markets:
         mkt = m["market"]
@@ -156,14 +162,16 @@ def build_name_market_map():
 
 
 def get_cached_name_market_map():
-    """종목명 매핑 TTL 캐시. TTL 내에는 market/all API 호출 없이 반환."""
+    """종목명 매핑 TTL 캐시. TTL 내에는 market/all API 호출 없이 반환. API 실패 시 기존 캐시 유지."""
     global _name_market_map_cache, _market_cache_time
     now_ts = time.time()
     if _name_market_map_cache is not None and (now_ts - _market_cache_time) < _MARKET_CACHE_TTL:
         return _name_market_map_cache
-    _name_market_map_cache = build_name_market_map()
-    _market_cache_time = now_ts
-    return _name_market_map_cache
+    new_map = build_name_market_map()
+    if new_map:
+        _name_market_map_cache = new_map
+        _market_cache_time = now_ts
+    return _name_market_map_cache if _name_market_map_cache is not None else {}
 
 
 def get_ticker_price(market, retries=3, delay=1):
@@ -251,17 +259,27 @@ def _get_ticker_prices_one_by_one(markets):
     return result
 
 
-def get_accounts():
-    """보유 코인/잔고 조회"""
+def get_accounts(retries=3, delay=1):
+    """보유 코인/잔고 조회. 네트워크/DNS 일시 오류 시 재시도 후 실패하면 [] 반환."""
     url = f"{UPBIT_BASE_URL}/accounts"
     token = get_upbit_jwt()
     headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.get(url, headers=headers, timeout=10)
-    handle_api_auth_error(resp, "계좌 조회")
-    if resp.status_code != 200:
-        print(f"⚠️ [계좌 조회 실패] {resp.status_code} {resp.text}")
-        return []
-    return resp.json()
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            handle_api_auth_error(resp, "계좌 조회")
+            if resp.status_code != 200:
+                print(f"⚠️ [계좌 조회 실패] {resp.status_code} {resp.text}")
+                return []
+            return resp.json()
+        except requests.RequestException as e:
+            msg = f"⚠️ [계좌 조회 요청 실패] (시도 {attempt}/{retries}) : {e}"
+            print(msg)
+            if attempt == retries:
+                send_message(msg)
+                return []
+            time.sleep(delay * (2 ** (attempt - 1)))
+    return []
 
 
 def get_open_orders(market=None, limit=20):
@@ -313,31 +331,39 @@ def format_open_orders_message(orders, market_name=None):
 
 
 def get_minute_candles(market, unit=1, count=10):
-    """분봉 캔들 조회 (고가/저가 계산용). 마켓별 1회 요청이므로 호출 간 간격 유지."""
+    """분봉 캔들 조회 (고가/저가 계산용). 마켓별 1회 요청이므로 호출 간 간격 유지. 연결 오류 시 None 반환."""
     url = f"{UPBIT_BASE_URL}/candles/minutes/{unit}"
     params = {"market": market, "count": count}
-    resp = requests.get(url, params=params, timeout=10)
-    time.sleep(0.1)
-    if resp.status_code != 200:
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        time.sleep(0.1)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data:
+            return None
+        return data
+    except requests.RequestException as e:
+        print(f"⚠️ [분봉 캔들 조회 실패] {market} : {e}")
         return None
-    data = resp.json()
-    if not data:
-        return None
-    return data
 
 
 def get_day_candles(market, count=30):
-    """일봉 캔들 조회 (기준봉익절 최저가 계산용). 마켓별 1회 요청이므로 호출 간 간격 유지."""
+    """일봉 캔들 조회 (기준봉익절 최저가 계산용). 마켓별 1회 요청이므로 호출 간 간격 유지. 연결 오류 시 None 반환."""
     url = f"{UPBIT_BASE_URL}/candles/days"
     params = {"market": market, "count": count}
-    resp = requests.get(url, params=params, timeout=10)
-    time.sleep(0.1)
-    if resp.status_code != 200:
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        time.sleep(0.1)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data:
+            return None
+        return data
+    except requests.RequestException as e:
+        print(f"⚠️ [일봉 캔들 조회 실패] {market} : {e}")
         return None
-    data = resp.json()
-    if not data:
-        return None
-    return data
 
 
 def get_minute_highlow(market, market_name, num_candles=3):
